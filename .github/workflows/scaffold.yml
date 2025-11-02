@@ -1,0 +1,195 @@
+name: Scaffold Repo (comment or manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "scaffold preset"
+        required: false
+        default: "mvp"
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  scaffold:
+    # コメントに /scaffold が含まれる時だけ動作（手動実行は常にOK）
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.comment.body, '/scaffold')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 作業用ブランチを切る
+      - name: Create branch
+        run: |
+          BRANCH="scaffold/initial"
+          git checkout -b "$BRANCH" || git checkout "$BRANCH"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
+      # ディレクトリと最小ファイルを配置（骨組み）
+      - name: Write skeleton files
+        run: |
+          mkdir -p apps/web packages/core packages/db data docs/specs .github/ISSUE_TEMPLATE .github/workflows
+          # .gitignore
+          cat > .gitignore <<'EOF'
+node_modules
+.env
+.env.*
+/dist
+.next
+.DS_Store
+EOF
+
+          # README
+          cat > README.md <<'EOF'
+# Tabemono Zukan
+「このレシピはどれくらい身体にいい？」を根拠つきで示すMVP。
+
+## Packages
+- apps/web: Next.js（ひな形）
+- packages/core: スコア計算・A/B比較ロジック
+- packages/db: Prisma/DB
+
+## 開発
+pnpm i && pnpm -C apps/web dev
+EOF
+
+          # LICENSE (MIT)
+          cat > LICENSE <<'EOF'
+MIT License
+EOF
+
+          # Web 仮ページ（Next.js前でも表示できる仮のREADME用／後で置き換え）
+          mkdir -p apps/web/src/app
+          cat > apps/web/package.json <<'EOF'
+{
+  "name": "@tabemono-zukan/web",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "echo 'Next.js のセットアップ後に起動してください'",
+    "build": "echo 'Next.js のセットアップ後にビルドしてください' && exit 0",
+    "lint": "echo 'TODO: add eslint'"
+  }
+}
+EOF
+
+          # core: スコア関数の骨組み
+          mkdir -p packages/core/src
+          cat > packages/core/package.json <<'EOF'
+{
+  "name": "@tabemono-zukan/core",
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json || true"
+  }
+}
+EOF
+          cat > packages/core/tsconfig.json <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "declaration": true,
+    "outDir": "dist",
+    "strict": true
+  },
+  "include": ["src"]
+}
+EOF
+          cat > packages/core/src/score.ts <<'EOF'
+export type UserState = {
+  goal?: "減量" | "筋肥大" | "妊活" | "減塩" | "集中";
+  cautions?: Array<"高血圧" | "糖質制限" | "カフェイン感受性">;
+};
+export type Nutrients = {
+  energyKcal?: number;
+  protein?: number;
+  fiber?: number;
+  sodiumMg?: number;
+  satFatG?: number;
+  addedSugarG?: number;
+  folateMcg?: number;
+  vitaminDmcg?: number;
+};
+export function healthScore(n: Nutrients, u?: UserState): number {
+  let score = 50;
+  if (n.fiber) score += Math.min(15, n.fiber * 1.2);
+  if (n.protein) score += Math.min(15, (n.protein / 20) * 10);
+  if (n.sodiumMg) score -= Math.min(20, n.sodiumMg / 100);
+  if (n.satFatG) score -= Math.min(10, n.satFatG);
+  if (n.addedSugarG) score -= Math.min(10, n.addedSugarG / 2);
+  if (u?.goal === "減塩") score -= (n.sodiumMg ?? 0) / 80;
+  if (u?.goal === "妊活") score += ((n.folateMcg ?? 0) / 100) * 2;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+EOF
+          cat > packages/core/src/index.ts <<'EOF'
+export * from "./score";
+EOF
+
+          # db: Prisma スケルトン
+          mkdir -p packages/db
+          cat > packages/db/schema.prisma <<'EOF'
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
+model Food {
+  id        String   @id @default(cuid())
+  nameJa    String
+  source    String
+  unit      String
+  nutrients Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+EOF
+
+          # Issue テンプレ
+          cat > .github/ISSUE_TEMPLATE/feature.yml <<'EOF'
+name: Feature
+description: 新機能
+title: "[Feature] "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: 課題, description: 解決したいユーザー課題 }
+  - type: textarea
+    id: proposal
+    attributes: { label: 提案, description: ざっくり仕様/画面/データ }
+  - type: textarea
+    id: done
+    attributes: { label: 受け入れ基準, description: 完了の定義（テスト観点） }
+EOF
+
+      # 変更をコミット
+      - name: Commit changes
+        run: |
+          git config user.name "codex-bot"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "chore(scaffold): minimal repo skeleton" || echo "no changes"
+          git push -u origin "$BRANCH"
+
+      # PRを作成（peter-evans/create-pull-request 使用）
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(scaffold): minimal repo skeleton"
+          branch: ${{ env.BRANCH }}
+          title: "Scaffold: minimal repo skeleton"
+          body: |
+            自動生成された骨組みPRです。
+            - ディレクトリ構成
+            - coreのscore関数ひな形
+            - Prismaスキーマ雛形
+            - README/License/.gitignore
+          labels: scaffold, automation
