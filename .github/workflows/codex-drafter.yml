@@ -1,0 +1,42 @@
+name: Codex Drafter
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  draft:
+    if: contains(github.event.comment.body, '/codex')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate spec draft
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - <<'PY'
+import os, pathlib, textwrap, json
+title = """${{ github.event.issue.title }}"""
+comment = """${{ github.event.comment.body }}"""
+out = f"""# 仕様ドラフト
+- タイトル: {title}
+- トリガーコメント: {comment}
+
+## 目的
+## 要件
+## データ項目
+## UI/UX
+## テスト観点
+## 依存/懸念
+"""
+pathlib.Path("docs/specs").mkdir(parents=True, exist_ok=True)
+pathlib.Path("docs/specs/auto_spec.md").write_text(out, encoding="utf-8")
+PY
+      - name: Commit draft
+        run: |
+          git config user.name "codex-bot"
+          git config user.email "actions@github.com"
+          git add docs/specs/auto_spec.md
+          git commit -m "chore: add auto spec" || echo "no changes"
+          git push
